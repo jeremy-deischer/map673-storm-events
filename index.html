@@ -1,0 +1,241 @@
+<!DOCTYPE html>
+<html>
+
+<head>
+  <title>Storm Events</title>
+  <meta name="viewport" content="initial-scale=1.0">
+  <meta charset="utf-8">
+  <link href="https://unpkg.com/leaflet@1.3.1/dist/leaflet.css" rel="stylesheet">
+  <link href='https://fonts.googleapis.com/css?family=Open+Sans:300,400,600,700' rel='stylesheet' type='text/css'>
+  <style>
+    * {
+      margin: 0;
+      padding: 0;
+    }
+
+    html {
+      box-sizing: border-box;
+      height: 100%;
+    }
+
+    body {
+      background: #f2f6f9;
+      height: 100%;
+      font-family: "Open sans", Helvetica, Arial, sans-serif;
+    }
+
+    #container {
+      display: flex;
+      width: 100%;
+      height: 100%;
+    }
+
+    #map {
+      flex: 1;
+      margin: 10px;
+    }
+
+    #widgets {
+      width: 300px;
+      margin: 10px 10px 10px 0;
+    }
+
+    .widget {
+      background: white;
+      padding: 10px;
+      margin-bottom: 10px;
+    }
+
+    .widget h1 {
+      font-size: 1.2em;
+    }
+
+    .widget-formula .result {
+      font-size: 2em;
+    }
+  </style>
+</head>
+
+<body>
+  <div id="container">
+    <div id="map"></div>
+    <div id="widgets">
+      <div id="countriesWidget" class="widget">
+        <h1>US State</h1>
+        <select class="js-countries">
+          <option value="">All</option>
+        </select>
+      </div>
+      <div id="sumStormEvents" class="widget widget-formula">
+        <h1>Number of Storm Events</h1>
+        <p> <span class="js-average-population result"> -- </span> events </p>
+      </div>
+    </div>
+    <script src="https://unpkg.com/leaflet@1.3.1/dist/leaflet.js"></script>
+    <script src="https://cartodb-libs.global.ssl.fastly.net/carto.js/v4.0.8/carto.min.js"></script>
+    <script>
+      const map = L.map('map').setView([50, -100], 4);
+
+      // Adding Voyager Basemap
+      L.tileLayer('https://{s}.basemaps.cartocdn.com/rastertiles/voyager_nolabels/{z}/{x}/{y}.png', {
+        maxZoom: 18
+      }).addTo(map);
+
+      // Adding Voyager Labels
+      L.tileLayer('https://{s}.basemaps.cartocdn.com/rastertiles/voyager_only_labels/{z}/{x}/{y}.png', {
+        maxZoom: 18,
+        zIndex: 10
+      }).addTo(map);
+
+      var client = new carto.Client({
+        apiKey: '5933d9c454e8e0fec41ebf99580895dd07a9699d',
+        username: 'jdeischer'
+      });
+
+      const usStatesDataset = new carto.source.Dataset(`
+  states
+`);
+
+      const usStatesStyle = new carto.style.CartoCSS(`
+  #layer {
+  polygon-fill: #162945;
+    polygon-opacity: 0.5;
+    ::outline {
+      line-width: 1;
+      line-color: #FFFFFF;
+      line-opacity: 0.5;
+    }
+  }
+`);
+      const usStates = new carto.layer.Layer(usStatesDataset, usStatesStyle);
+
+      const stormEventsSource = new carto.source.SQL(`
+  SELECT *
+    FROM stormevents
+    WHERE name IN (SELECT admin FROM states)
+`);
+      const populatedPlacesStyle = new carto.style.CartoCSS(
+        `
+  #layer {
+    marker-width: 8;
+    marker-fill: #FF583E;
+    marker-fill-opacity: 0.9;
+    marker-line-width: 0.5;
+    marker-line-color: #FFFFFF;
+    marker-line-opacity: 1;
+    marker-type: ellipse;
+    marker-allow-overlap: false;
+  }
+`
+      );
+      const populatedPlaces = new carto.layer.Layer(stormEventsSource, populatedPlacesStyle, {
+        featureOverColumns: ['location']
+      });
+
+      client.addLayers([usStates, populatedPlaces]);
+
+      client.getLeafletLayer().addTo(map);
+
+
+      const popup = L.popup({
+        closeButton: false
+      });
+      populatedPlaces.on(carto.layer.events.FEATURE_OVER, featureEvent => {
+        popup.setLatLng(featureEvent.latLng);
+        if (!popup.isOpen()) {
+          popup.setContent(featureEvent.data.location);
+          popup.openOn(map);
+        }
+      });
+
+      populatedPlaces.on(carto.layer.events.FEATURE_OUT, featureEvent => {
+        popup.removeFrom(map);
+      });
+
+      const statesDataview = new carto.dataview.Category(usStatesDataset, 'name', {
+        limit: 100
+      });
+
+      statesDataview.on('dataChanged', data => {
+        const stateNames = data.categories.map(category => category.name).sort();
+        refreshStateWidget(stateNames);
+      });
+
+      function refreshStateWidget(adminNames) {
+        const widgetDom = document.querySelector('#countriesWidget');
+        const countriesDom = widgetDom.querySelector('.js-countries');
+
+        countriesDom.onchange = event => {
+          const admin = event.target.value;
+          highlightCountry(admin);
+          filterPopulatedPlacesByCountry(admin);
+        };
+
+        // Fill in the list of states
+        adminNames.forEach(admin => {
+          const option = document.createElement('option');
+          option.innerHTML = admin;
+          option.value = admin;
+          countriesDom.appendChild(option);
+        });
+      }
+
+      function highlightCountry(admin) {
+        let cartoCSS = `
+    #layer {
+      polygon-fill: #162945;
+      polygon-opacity: 0.5;
+      ::outline {
+        line-width: 1;
+        line-color: #FFFFFF;
+        line-opacity: 0.5;
+      }
+    }
+  `;
+        if (admin) {
+          cartoCSS = `
+      ${cartoCSS}
+      #layer[admin!='${admin}'] {
+        polygon-fill: #CDCDCD;
+      }
+    `;
+        }
+        usStatesStyle.setContent(cartoCSS);
+      }
+
+      function filterPopulatedPlacesByCountry(admin) {
+        let query = `
+    SELECT *
+      FROM stormevents
+      WHERE admin IN (SELECT admin FROM states)
+  `;
+        if (admin) {
+          query = `
+      SELECT *
+        FROM stormevents
+        WHERE admin='${admin}'
+    `;
+        }
+        stormEventsSource.setQuery(query);
+      }
+
+      client.addDataview(statesDataview);
+
+      const sumStormEvents = new carto.dataview.Formula(stormEventsSource, 'name', {
+        operation: carto.operation.freq
+      });
+
+      sumStormEvents.on('dataChanged', data => {
+        refreshsumStormEventsWidget(data.result);
+      });
+
+      function refreshsumStormEventsWidget(avgPopulation) {
+        const widgetDom = document.querySelector('#sumStormEvents');
+        const sumStormEventsDom = widgetDom.querySelector('.js-average-population');
+        sumStormEventsDom.innerText = Math.floor(avgPopulation);
+      }
+      client.addDataview(sumStormEvents);
+    </script>
+</body>
+
+</html>
